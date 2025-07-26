@@ -36,9 +36,19 @@ In order to use the logic analyzer, I utilized a `2MOhm` `1/10` resistive divide
 The logic analyzer allowed to record a power cycle, which looks like this:
 ![boot](./img/boot.png)
 
-From timing consideration, I will call TX the higher part, which happens first, RX (receive) the higher part:
+It seams that `0-22V` is one way transmission, lets call it TX, and `22-40V` is other way, lets call it RX. TX happens first at boot.
+
 <img src="./img/tx.png" alt="drawing" style="width:400px;"/>
 <img src="./img/rx.png" alt="drawing" style="width:400px;"/>
+
+TX and RX are coexisting: TX is continuously transmitting 2 time 6 bytes. RX is acknowledging via pulling down the stop bit of the last of 6 bytes packet. RX sends `RX-11` every 12 bytes from TX. A special `RX-11` precedes the transmission of the longer `RX-66` packet (TX is acknowledging intent to receive `RX-66` packet by sending `0xDC` after `RX-11`).
+
+#### Boot
+
+At boot, after power cycle there are cases where `RX-66` is sent without a preceding `RX-11`:
+```
+TX: 0F CF FF FF 1F -> RX-66
+```
 
 #### TX
 
@@ -47,19 +57,37 @@ It seems to be serial frames at `12ms` bit duration (`83bps`), coded `8E1`.
 Despite `8E1` provides best error free configuration, there is still some periodic framing errors, see `!`:
 ![framing errors](./img/framing_errors.png)
 
-These errors seem to occur systematically at end of packets of 6 bytes: assuming a `8E1` frame configuration, the stop bit of the 6th byte is low instead of high, resulting in a frameing error. It could be some kind of `ACK` mechanism (similar to I2C) where the receiver pulls down to acknoledge the reception:
+##### TX acknowledge
+
+TX framing errors seem to occur systematically at end of packets of 6 bytes: assuming a `8E1` frame configuration, the stop bit of the 6th byte is low instead of high, resulting in a framing error. It could be some kind of `ACK` mechanism (similar to I2C) where the receiver pulls down to acknowledge the reception:
 ![framing error detail](./img/framing_error_detail.png)
 
 #### RX
 
 During RX, 50Hz waves increased amplitude. There is cases where RX phase lasts shorter or longer intervals.
 
-At specific time intervals, the line shows discontinuities, which lets me think about some kind of serial or bipolar encoding.
+At specific time intervals, the line shows discontinuities, bringing the voltage above or below a certain level. This lets me think about some kind of serial or bipolar encoding.
 
 All frames seem to be composed by:
 
 1. Header `H`: a `100ms` initial header, with `H1`: `25ms` down, `H2`: `75ms` up
-2. Data `D`: e certain number (`11` short, `66` long) sequence of `12ms` intervals where voltage is either above or below a `~20V` threshold
+2. Data `D`: e certain number (`11` short -> `RX-11`, `66` long -> `RX-66`) sequence of `12ms` intervals where voltage is either above or below a `~20V` threshold
 3. Footer `F`: a `200ms` final footer, `F1`: `100ms` up, `F2`: `100ms` down
 
 ![rx frame](./img/rx_frame.png)
+
+One idea was that TX is sending commands and RX responding. This was null by the fact that there is long RX transmissions preceded by TX packets which are same to other preceding short RX: `TX @ 238.490 (012): 1E EF 2C F9 7F 49 1A FF ED FD F0 07` -> long RX, but `TX @ 230.347 (012): 1E EF 2C F9 7F 49 1A FF ED FD F0 07` -> short RX. So, same TX can result in short or long RX.
+
+##### RX-66 and RX-11
+
+There is 2 types or RX transmission: shorer `RX-11` only and longer `RX-11` + `RX-66`. `RX-11` has different value when is followed by an `RX-66`. Also, `RX-11` + `RX-66` are transmitted with same preceding TX as-of when there is only `RX-11`; this leads to think that TX is not commanding RX, but RX decides when to send also `RX-66`.
+
+`RX-66` is sent in this condition:
+1. `RX-11 == 00010101100` (different than cases when there is no `RX-66`)
+2. TX sends `0xDC` (kind of byte ack?)
+3. RX acknowledges by pulling low the last stop bit of `0xDC`
+4. RX sends `RX-66` packet
+
+![RX-66](./img/RX-66.png)
+
+When there is no subsequent `RX-66` then `RX-11 == 00001101100`.
